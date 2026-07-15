@@ -34,9 +34,103 @@ import {
   CitySearchResult, 
   CurrentWeather, 
   DailyForecast, 
-  WeatherIntelligence 
+  WeatherIntelligence,
+  WeatherAlert
 } from "./types";
 import { getWeatherCondition, getWindDirection } from "./lib/weatherUtils";
+
+// Client-side high-fidelity weather and planning intelligence generator
+function generateClientIntelligence(city: string, currentWeather: CurrentWeather, forecast: DailyForecast[]): WeatherIntelligence {
+  const weatherLabel = getWeatherCondition(currentWeather.weatherCode).label;
+  const overview = `The weather in ${city} is currently ${weatherLabel.toLowerCase()} at ${currentWeather.temp}°C. Over the course of the week, temperatures will range between ${Math.min(...forecast.map(f => f.minTemp))}°C and ${Math.max(...forecast.map(f => f.maxTemp))}°C.`;
+  
+  const clothing: string[] = [];
+  if (currentWeather.temp < 10) {
+    clothing.push("A heavy winter coat, warm gloves, and an insulating scarf are highly recommended.");
+    clothing.push("Wear thick thermal layers or double-layered socks to maintain body heat.");
+  } else if (currentWeather.temp < 18) {
+    clothing.push("Dress in light layers: a comfortable long-sleeve shirt under a warm sweater or light jacket is perfect.");
+    clothing.push("Long trousers or jeans are recommended for the cool air.");
+  } else if (currentWeather.temp < 28) {
+    clothing.push("Lightweight, breathable garments such as linen shirts, classic t-shirts, or summer dresses.");
+    clothing.push("A light windbreaker or sun cap is useful during daytime excursions.");
+  } else {
+    clothing.push("Warm conditions: choose activewear, light shorts, and tank tops.");
+    clothing.push("Always protect yourself with polarized sunglasses and high-coverage hats.");
+  }
+
+  if (currentWeather.humidity > 80) {
+    clothing.push("High atmospheric humidity detected: opt for synthetic moisture-wicking apparel over denim.");
+  }
+  if (currentWeather.precipitation > 0 || currentWeather.weatherCode >= 50) {
+    clothing.push("An umbrella or waterproof shell is essential for staying dry outdoors.");
+  }
+
+  const activities = forecast.map((day) => {
+    let suitability: "Excellent" | "Good" | "Fair" | "Poor" = "Excellent";
+    let recommendation = "";
+
+    const desc = getWeatherCondition(day.weatherCode).label.toLowerCase();
+    if (day.precipProb > 50 || day.precipSum > 2) {
+      suitability = "Poor";
+      recommendation = `High probability of rain (${day.precipProb}%). Best suited for indoor activities such as visiting local museums, planning cozy meals, or catching a movie.`;
+    } else if (day.maxTemp > 32) {
+      suitability = "Fair";
+      recommendation = `Very warm afternoon peaks forecasted (${day.maxTemp}°C). Enjoy morning walks, and pivot to fully air-conditioned spaces during peak heat.`;
+    } else if (day.minTemp < 5) {
+      suitability = "Fair";
+      recommendation = `Chilly start to the day (${day.minTemp}°C). Perfect for indoor cafe sessions, warm afternoon strolls, and museum visits.`;
+    } else {
+      suitability = "Excellent";
+      recommendation = `Magnificent weather with ${desc} and a comfortable high of ${day.maxTemp}°C. Excellent for hiking, picnics, cycling, and outdoor tours.`;
+    }
+
+    return {
+      day: day.dayName,
+      recommendation,
+      suitability,
+    };
+  });
+
+  const planningAlerts: WeatherAlert[] = [];
+
+  // Check UV index warnings
+  const maxUv = Math.max(...forecast.map(f => f.uvIndex));
+  if (maxUv >= 6) {
+    planningAlerts.push({
+      type: "High UV Warning",
+      message: `UV index peaks at ${maxUv} this week. Generous SPF 30+ sunscreen, sunglasses, and protective headwear are highly recommended.`,
+      severity: "warning"
+    });
+  }
+
+  // Check Storm warnings
+  const stormyDays = forecast.filter(f => f.weatherCode >= 80 || f.weatherCode === 95 || f.weatherCode === 96 || f.weatherCode === 99);
+  if (stormyDays.length > 0) {
+    planningAlerts.push({
+      type: "Dynamic Rain / Storms",
+      message: `Occasional showers or stormy conditions expected around ${stormyDays.map(r => r.dayName).join(", ")}. Carry umbrellas and prepare backup indoor plans.`,
+      severity: "warning"
+    });
+  }
+
+  // Wind speed warning
+  const maxWind = Math.max(...forecast.map(f => f.windSpeed));
+  if (maxWind > 45) {
+    planningAlerts.push({
+      type: "Gale Warnings",
+      message: `Strong gusty winds up to ${maxWind} km/h are forecasted. Secure lightweight objects outdoors and avoid forest routes.`,
+      severity: "warning"
+    });
+  }
+
+  return {
+    overview,
+    activities,
+    clothing,
+    planningAlerts
+  };
+}
 
 const PRESET_CITIES = [
   { name: "New York", lat: 40.7128, lon: -74.0060, country: "United States" },
@@ -108,10 +202,10 @@ export default function App() {
   const searchCities = async (query: string) => {
     setIsSearchingCities(true);
     try {
-      const res = await fetch(`/api/weather/search?city=${encodeURIComponent(query)}`);
+      const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=10&language=en&format=json`);
       if (!res.ok) throw new Error("Search failed");
       const data = await res.json();
-      setSearchResults(data);
+      setSearchResults(data.results || []);
       setShowDropdown(true);
     } catch (err) {
       console.error(err);
@@ -130,8 +224,10 @@ export default function App() {
     setSelectedDayIndex(0);
 
     try {
-      // 1. Fetch Forecast data
-      const forecastRes = await fetch(`/api/weather/forecast?lat=${lat}&lon=${lon}`);
+      // 1. Fetch Forecast data directly from Open-Meteo Forecast API in the frontend
+      const forecastRes = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,sunrise,sunset,uv_index_max,precipitation_sum,rain_sum,showers_sum,snowfall_sum,precipitation_probability_max,wind_speed_10m_max&timezone=auto`
+      );
       if (!forecastRes.ok) {
         throw new Error("Unable to retrieve weather forecast. Please try again.");
       }
@@ -181,28 +277,13 @@ export default function App() {
       setForecast(parsedForecast);
       setIsLoadingForecast(false);
 
-      // 2. Fetch AI Intelligence from Server Side
+      // 2. Generate Planning Intelligence purely client-side instantly
       try {
-        const intelRes = await fetch("/api/weather/intelligence", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            city: cityName,
-            currentWeather: parsedCurrent,
-            forecast: parsedForecast,
-          }),
-        });
-
-        if (!intelRes.ok) {
-          const errData = await intelRes.json();
-          throw new Error(errData.error || "AI service not responding");
-        }
-
-        const intelData = await intelRes.json();
+        const intelData = generateClientIntelligence(cityName, parsedCurrent, parsedForecast);
         setIntelligence(intelData);
       } catch (intelErr: any) {
-        console.error("AI Generation failed:", intelErr);
-        // Fallback intelligence if Gemini API fails or is not configured
+        console.error("Client intelligence generation failed:", intelErr);
+        // Secondary fallback
         setIntelligence({
           overview: "Enjoy the transition in local weather conditions this week. Dynamic atmospheric factors are at play.",
           activities: parsedForecast.map(f => ({
@@ -217,8 +298,8 @@ export default function App() {
           ],
           planningAlerts: [
             {
-              type: "AI Offline Mode",
-              message: "Gemini AI model is preparing or key is unconfigured. Showing rule-based local meteorology suggestions.",
+              type: "Local Mode",
+              message: "Showing rule-based local meteorology suggestions.",
               severity: "info"
             }
           ]
@@ -290,7 +371,7 @@ export default function App() {
               <h1 className="text-xl font-bold bg-gradient-to-r from-slate-900 to-indigo-950 bg-clip-text text-transparent">
                 Weather Intelligence
               </h1>
-              <p className="text-xs text-slate-500 font-medium">Precision Forecasts & AI Lifestyle Insights</p>
+              <p className="text-xs text-slate-500 font-medium">Precision Forecasts & Lifestyle Planning Insights</p>
             </div>
           </div>
 
@@ -780,9 +861,9 @@ export default function App() {
                   </div>
                   <div>
                     <h3 className="font-extrabold text-sm tracking-tight text-white flex items-center gap-1">
-                      Gemini Intelligence
+                      Weather Intelligence
                     </h3>
-                    <p className="text-[10px] text-indigo-300 font-medium mt-0.5">Generative Weather Planner</p>
+                    <p className="text-[10px] text-indigo-300 font-medium mt-0.5">Smart Lifestyle Planner</p>
                   </div>
                 </div>
               </div>
@@ -816,7 +897,7 @@ export default function App() {
                     {/* 2. Planning Alerts / Precautions */}
                     {intelligence.planningAlerts && intelligence.planningAlerts.length > 0 && (
                       <div className="border-t border-slate-800/80 pt-4" id="ai_alerts_container">
-                        <span className="text-[10px] uppercase font-bold text-rose-400 tracking-widest block mb-2.5">AI Planning Precautions</span>
+                        <span className="text-[10px] uppercase font-bold text-rose-400 tracking-widest block mb-2.5">Meteorological Planning Alerts</span>
                         <div className="space-y-2">
                           {intelligence.planningAlerts.map((alert, i) => (
                             <div 
@@ -906,9 +987,9 @@ export default function App() {
             <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm flex gap-3 items-start">
               <Info className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
               <div>
-                <h5 className="font-bold text-xs text-slate-800">About Open-Meteo & Gemini</h5>
+                <h5 className="font-bold text-xs text-slate-800">About Open-Meteo & Analytics</h5>
                 <p className="text-[11px] text-slate-500 leading-relaxed mt-1">
-                  Weather forecasts are retrieved live via Open-Meteo. The planning intelligence analysis is processed in real-time on your server with Gemini 3.5 Flash using specific meteorological parameters.
+                  Weather forecasts are retrieved live via Open-Meteo. The planning intelligence analysis is processed in real-time client-side in your browser using precise meteorological parameters.
                 </p>
                 <a 
                   href="https://open-meteo.com/" 
@@ -930,7 +1011,7 @@ export default function App() {
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200/60 mt-12 py-6 text-center">
         <p className="text-xs text-slate-400 font-medium">
-          Weather Intelligence App &copy; {new Date().getFullYear()} • Powered by Gemini 3.5 Flash & Open-Meteo Geocoding/Forecast API
+          Weather Intelligence App &copy; {new Date().getFullYear()} • Powered by Open-Meteo Geocoding & Forecast APIs
         </p>
       </footer>
     </div>
