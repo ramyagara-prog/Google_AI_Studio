@@ -1,0 +1,6 @@
+{
+  "name": "Weather Intelligence App",
+  "description": "A high-fidelity weather application providing real-time conditions, 7-day forecasts, and AI-powered weather intelligence and planning recommendations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
